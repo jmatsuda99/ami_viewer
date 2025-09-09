@@ -11,7 +11,9 @@ st.title("契約別 30分データ 可視化ツール（無加工）")
 st.markdown("""
 - **契約番号** と **日付**（単日）を選ぶと、その日の30分単位グラフを表示します。  
 - **開始日・終了日** を指定すると、指定期間の各日を重ねて表示します（凡例=日付）。  
-- 単位は **kWh(30分値)** と **kW換算(x2)** を切替できます。
+- 単位は **kWh(30分値)** と **kW換算(x2)** を切替できます。  
+- **Legend**（凡例）の表示/非表示を切替できます。  
+- **Axis labels** は英語（X: Time / Y: Energy [kWh] or Demand [kW]）。
 """)
 
 @st.cache_data(show_spinner=False)
@@ -27,28 +29,29 @@ def load_excel(file) -> dict:
         data[sheet] = df
     return data
 
-# ファイル入力
-st.sidebar.header("データファイル")
-uploaded = st.sidebar.file_uploader("Excelファイル（例：契約別_時間帯別（30分）集計_all4_fix.xlsx）", type=["xlsx"])
+# Sidebar controls
+st.sidebar.header("Settings")
+uploaded = st.sidebar.file_uploader("Excel（例：契約別_時間帯別（30分）集計_all4_fix.xlsx）", type=["xlsx"])
 default_path = "/mnt/data/契約別_時間帯別（30分）集計_all4_fix.xlsx"
 use_default = False
 if uploaded is None and os.path.exists(default_path):
     st.sidebar.info("アップロードが無いので、既定ファイルを使用します。")
     use_default = True
 
+legend_on = st.sidebar.checkbox("Show legend", value=True)
+unit = st.sidebar.radio("Unit", ["kWh (30min)", "kW (x2)"], index=0)
+
+def convert_values(series):
+    if unit.startswith("kW"):
+        return series.astype(float) * 2.0
+    return series.astype(float)
+
+y_label = "Energy [kWh]" if unit.startswith("kWh") else "Demand [kW]"
+
 data_map = load_excel(uploaded if not use_default else default_path)
 if not data_map:
     st.warning("Excelファイルをアップロードしてください。")
     st.stop()
-
-# 単位選択
-unit = st.sidebar.radio("単位表示", ["kWh (30分値)", "kW (換算 x2)"], index=0)
-def convert_values(series):
-    if unit.startswith("kW"):
-        return series * 2.0
-    return series
-
-y_label = "使用量 [kWh]" if unit.startswith("kWh") else "需要電力 [kW]"
 
 contracts = list(data_map.keys())
 contract = st.sidebar.selectbox("契約番号", contracts, index=0)
@@ -75,7 +78,7 @@ with tab1:
         if row.empty:
             st.warning("選択日のデータが見つかりません。")
         else:
-            y = convert_values(row[time_cols].iloc[0].astype(float)).values.flatten()
+            y = convert_values(row[time_cols].iloc[0]).values.flatten()
             fig, ax = plt.subplots(figsize=(12,4))
             try:
                 plt.rcParams["font.family"] = "Noto Sans CJK JP"
@@ -83,9 +86,10 @@ with tab1:
                 pass
             ax.plot(time_cols, y, label=f"{contract}")
             ax.set_title(f"{contract} | {day_sel.strftime('%Y-%m-%d')} 30分単位（{unit}）")
-            ax.set_xlabel("時刻")
+            ax.set_xlabel("Time")
             ax.set_ylabel(y_label)
-            ax.legend()
+            if legend_on:
+                ax.legend()
             plt.xticks(rotation=45)
             st.pyplot(fig, use_container_width=True)
 
@@ -117,10 +121,11 @@ with tab2:
                 pass
             for _, row in sub.sort_values("年月日").iterrows():
                 lab = row["年月日"].date().strftime("%Y-%m-%d")
-                ax2.plot(time_cols, convert_values(row[time_cols].astype(float)).values.flatten(), label=lab)
+                ax2.plot(time_cols, convert_values(row[time_cols]).values.flatten(), label=lab)
             ax2.set_title(f"{contract} | {start_d.strftime('%Y-%m-%d')}〜{end_d.strftime('%Y-%m-%d')}（各日重ね / {unit}）")
-            ax2.set_xlabel("時刻")
+            ax2.set_xlabel("Time")
             ax2.set_ylabel(y_label)
-            ax2.legend(ncol=3, fontsize=8)
+            if legend_on:
+                ax2.legend(ncol=3, fontsize=8)
             plt.xticks(rotation=45)
             st.pyplot(fig2, use_container_width=True)
