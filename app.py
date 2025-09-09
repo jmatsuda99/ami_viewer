@@ -2,9 +2,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
-import hashlib
-import sqlite3
-import os
+import hashlib, sqlite3, os, io
 from datetime import date
 
 st.set_page_config(page_title="Contract 30-min Data Visualizer (DB)", layout="wide")
@@ -13,6 +11,7 @@ st.title("Contract 30-min Data Visualizer (raw) — with persistent DB")
 DB_PATH = "app_data/contract_data.sqlite"
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
+# ---------------- DB helpers ----------------
 def get_conn():
     return sqlite3.connect(DB_PATH, check_same_thread=False)
 
@@ -38,10 +37,7 @@ def init_db():
         )""")
 
 def file_sha256(file_bytes: bytes) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    h.update(file_bytes)
-    return h.hexdigest()
+    h = hashlib.sha256(); h.update(file_bytes); return h.hexdigest()
 
 def ensure_contract(con, contract_no: str) -> int:
     cur = con.execute("SELECT id FROM contracts WHERE contract_no=?", (contract_no,))
@@ -51,15 +47,13 @@ def ensure_contract(con, contract_no: str) -> int:
     return cur.lastrowid
 
 def insert_readings(con, contract_id: int, df: pd.DataFrame):
-    if "年月日" not in df.columns:
-        return
+    if "年月日" not in df.columns: return
     df = df.copy()
     df["年月日"] = pd.to_datetime(df["年月日"].astype(str), format="%Y%m%d", errors="coerce")
     df = df.dropna(subset=["年月日"])
     time_cols = [c for c in df.columns if ":" in str(c)]
-    if not time_cols:
-        return
-    long_df = df[["年月日"] + time_cols].copy().melt(id_vars=["年月日"], var_name="time", value_name="kwh")
+    if not time_cols: return
+    long_df = df[["年月日"] + time_cols].melt(id_vars=["年月日"], var_name="time", value_name="kwh")
     long_df["ymd"] = long_df["年月日"].dt.strftime("%Y-%m-%d")
     long_df["kwh"] = pd.to_numeric(long_df["kwh"], errors="coerce").fillna(0.0)
     con.executemany("""
@@ -74,15 +68,14 @@ def ingest_excel_to_db(file_bytes: bytes, file_name: str):
     with get_conn() as con:
         cur = con.execute("SELECT id FROM files WHERE sha256=?", (sha,))
         if cur.fetchone():
-            return False, "This file has already been ingested (by content hash)."
-        import io
+            return False, "Already ingested (same content)."
         xl = pd.ExcelFile(io.BytesIO(file_bytes))
         for sheet in xl.sheet_names:
             df = pd.read_excel(xl, sheet_name=sheet)
             cid = ensure_contract(con, str(sheet))
             insert_readings(con, cid, df)
         con.execute("INSERT INTO files(name, sha256) VALUES (?, ?)", (file_name, sha))
-        return True, "Ingest completed."
+        return True, f"Ingested: {file_name}"
 
 def list_contracts():
     init_db()
@@ -98,25 +91,32 @@ def list_dates(contract_id: int):
 def get_series(contract_id: int, ymd: str):
     with get_conn() as con:
         rows = con.execute("SELECT time, kwh FROM readings WHERE contract_id=? AND ymd=? ORDER BY time", (contract_id, ymd)).fetchall()
-    if not rows:
-        return [], []
-    times = [r[0] for r in rows]
-    vals = [r[1] for r in rows]
+    if not rows: return [], []
+    times = [r[0] for r in rows]; vals = [r[1] for r in rows]
     return times, vals
 
+# ---------------- UI ----------------
 st.sidebar.header("Data source / DB")
 uploaded = st.sidebar.file_uploader("Upload Excel (ingest once → stored in DB)", type=["xlsx"])
+
+# NOTE: avoid StreamlitAPIException by not using st.sidebar.success/info inside file_uploader immediate branch.
 if uploaded is not None:
-    file_bytes = uploaded.getvalue()
-    ok, msg = ingest_excel_to_db(file_bytes, uploaded.name)
-    st.sidebar.success(msg) if ok else st.sidebar.info(msg)
+    try:
+        ok, msg = ingest_excel_to_db(uploaded.getvalue(), uploaded.name)
+        # Use non-API messaging (write) to avoid strict sidebar wrappers
+        st.sidebar.write(("✅ " if ok else "ℹ️ ") + str(msg))
+    except Exception as e:
+        st.sidebar.write("⚠️ Ingest error.")
 
 default_path = "/mnt/data/契約別_時間帯別（30分）集計_all4_fix.xlsx"
 if os.path.exists(default_path):
     if st.sidebar.button("Ingest built-in sample once"):
-        with open(default_path, "rb") as f:
-            ok, msg = ingest_excel_to_db(f.read(), os.path.basename(default_path))
-        st.sidebar.success(msg if ok else msg)
+        try:
+            with open(default_path, "rb") as f:
+                ok, msg = ingest_excel_to_db(f.read(), os.path.basename(default_path))
+            st.sidebar.write(("✅ " if ok else "ℹ️ ") + str(msg))
+        except Exception:
+            st.sidebar.write("⚠️ Ingest error.")
 
 legend_on = st.sidebar.checkbox("Show legend", value=True)
 unit = st.sidebar.radio("Unit", ["kWh (30min)", "kW (x2)"], index=0)
@@ -146,14 +146,11 @@ with tabs[0]:
         times, vals = get_series(sel_contract["id"], day_sel)
         vals = convert(vals)
         fig, ax = plt.subplots(figsize=(12,4))
-        try:
-            plt.rcParams["font.family"] = "Noto Sans CJK JP"
-        except Exception:
-            pass
+        try: plt.rcParams["font.family"] = "Noto Sans CJK JP"
+        except Exception: pass
         ax.plot(times, vals, label=f"{sel_contract['contract_no']}")
         ax.set_title(f"Contract {sel_contract['contract_no']} | {day_sel} (30min, {unit})")
-        ax.set_xlabel("Time")
-        ax.set_ylabel(y_label)
+        ax.set_xlabel("Time"); ax.set_ylabel(y_label)
         if legend_on: ax.legend()
         plt.xticks(rotation=45)
         st.pyplot(fig, use_container_width=True)
@@ -166,24 +163,20 @@ with tabs[1]:
         col1, col2 = st.columns(2)
         start_d = col1.selectbox("Start date", dates, index=0)
         end_d = col2.selectbox("End date", dates, index=len(dates)-1)
-        start_idx = dates.index(start_d)
-        end_idx = dates.index(end_d)
+        start_idx = dates.index(start_d); end_idx = dates.index(end_d)
         if start_idx > end_idx:
             st.error("Start date is after end date.")
         else:
             sel_range = dates[start_idx:end_idx+1]
             fig2, ax2 = plt.subplots(figsize=(12,5))
-            try:
-                plt.rcParams["font.family"] = "Noto Sans CJK JP"
-            except Exception:
-                pass
+            try: plt.rcParams["font.family"] = "Noto Sans CJK JP"
+            except Exception: pass
             for d in sel_range:
                 t, v = get_series(sel_contract["id"], d)
                 v = convert(v)
                 ax2.plot(t, v, label=d)
             ax2.set_title(f"Contract {sel_contract['contract_no']} | {sel_range[0]} ~ {sel_range[-1]} (Overlay / {unit})")
-            ax2.set_xlabel("Time")
-            ax2.set_ylabel(y_label)
+            ax2.set_xlabel("Time"); ax2.set_ylabel(y_label)
             if legend_on: ax2.legend(ncol=3, fontsize=8)
             plt.xticks(rotation=45)
             st.pyplot(fig2, use_container_width=True)
@@ -195,10 +188,19 @@ with tabs[2]:
         ccnt = con.execute("SELECT COUNT(*) FROM contracts").fetchone()[0]
         rcnt = con.execute("SELECT COUNT(*) FROM readings").fetchone()[0]
     st.write(f"Files: {fcnt}, Contracts: {ccnt}, Readings: {rcnt}")
+
     c1, c2 = st.columns(2)
     if c1.button("Export DB"):
-        with open(DB_PATH, "rb") as f:
-            st.download_button("Download contract_data.sqlite", data=f, file_name="contract_data.sqlite", mime="application/octet-stream")
+        # read bytes for download_button
+        try:
+            with open(DB_PATH, "rb") as f:
+                db_bytes = f.read()
+            st.download_button("Download contract_data.sqlite", data=db_bytes, file_name="contract_data.sqlite", mime="application/octet-stream")
+        except Exception:
+            st.write("⚠️ Export failed.")
     if c2.button("Clear ALL data (danger)"):
-        os.remove(DB_PATH)
-        st.warning("DB removed. Please refresh the page.")
+        try:
+            os.remove(DB_PATH)
+            st.warning("DB removed. Please refresh the page.")
+        except FileNotFoundError:
+            st.info("DB file not found.")
