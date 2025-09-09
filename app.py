@@ -5,15 +5,15 @@ import matplotlib.pyplot as plt
 from datetime import date
 import os
 
-st.set_page_config(page_title="契約別 30分データ可視化ツール", layout="wide")
-st.title("契約別 30分データ 可視化ツール（無加工）")
+st.set_page_config(page_title="Contract 30-min Data Visualizer", layout="wide")
+st.title("Contract 30-min Data Visualizer (raw)")
 
 st.markdown("""
-- **契約番号** と **日付**（単日）を選ぶと、その日の30分単位グラフを表示します。  
-- **開始日・終了日** を指定すると、指定期間の各日を重ねて表示します（凡例=日付）。  
-- 単位は **kWh(30分値)** と **kW換算(x2)** を切替できます。  
-- **Legend**（凡例）の表示/非表示を切替できます。  
-- **Axis labels** は英語（X: Time / Y: Energy [kWh] or Demand [kW]）。
+- Select **Contract** and **Date** to show that day's 30-min series.  
+- Set **Start / End** to overlay each day in the period (legend = date).  
+- Toggle **kWh (30min)** vs **kW (x2)**.  
+- Toggle **Legend** on/off.  
+- Axis labels are in English.
 """)
 
 @st.cache_data(show_spinner=False)
@@ -31,11 +31,11 @@ def load_excel(file) -> dict:
 
 # Sidebar controls
 st.sidebar.header("Settings")
-uploaded = st.sidebar.file_uploader("Excel（例：契約別_時間帯別（30分）集計_all4_fix.xlsx）", type=["xlsx"])
+uploaded = st.sidebar.file_uploader("Excel file (e.g., 契約別_時間帯別（30分）集計_all4_fix.xlsx)", type=["xlsx"])
 default_path = "/mnt/data/契約別_時間帯別（30分）集計_all4_fix.xlsx"
 use_default = False
 if uploaded is None and os.path.exists(default_path):
-    st.sidebar.info("アップロードが無いので、既定ファイルを使用します。")
+    st.sidebar.info("No upload provided. Using the default file available in the workspace.")
     use_default = True
 
 legend_on = st.sidebar.checkbox("Show legend", value=True)
@@ -50,33 +50,33 @@ y_label = "Energy [kWh]" if unit.startswith("kWh") else "Demand [kW]"
 
 data_map = load_excel(uploaded if not use_default else default_path)
 if not data_map:
-    st.warning("Excelファイルをアップロードしてください。")
+    st.warning("Please upload an Excel file.")
     st.stop()
 
 contracts = list(data_map.keys())
-contract = st.sidebar.selectbox("契約番号", contracts, index=0)
+contract = st.sidebar.selectbox("Contract", contracts, index=0)
 
 df = data_map[contract].copy()
 if "年月日" not in df.columns:
-    st.error("このシートに「年月日」列が見つかりません。")
+    st.error("Column '年月日' not found in this sheet.")
     st.stop()
 
 time_cols = [c for c in df.columns if ":" in str(c)]
 if not time_cols:
-    st.error("時刻列が見つかりません（'00:00:00' 等）。")
+    st.error("Time columns not found (e.g., '00:00:00').")
     st.stop()
 
-tab1, tab2 = st.tabs(["単日表示", "期間重ね表示"])
+tab1, tab2 = st.tabs(["Single day", "Overlay period"])
 
 with tab1:
     days = sorted(df["年月日"].dropna().dt.date.unique())
     if not len(days):
-        st.warning("有効な日付が見つかりません。")
+        st.warning("No valid dates found.")
     else:
-        day_sel = st.selectbox("日付を選択", days, index=0, format_func=lambda d: d.strftime("%Y-%m-%d"))
+        day_sel = st.selectbox("Date", days, index=0, format_func=lambda d: d.strftime("%Y-%m-%d"))
         row = df[df["年月日"].dt.date == day_sel]
         if row.empty:
-            st.warning("選択日のデータが見つかりません。")
+            st.warning("No data for the selected date.")
         else:
             y = convert_values(row[time_cols].iloc[0]).values.flatten()
             fig, ax = plt.subplots(figsize=(12,4))
@@ -85,7 +85,8 @@ with tab1:
             except Exception:
                 pass
             ax.plot(time_cols, y, label=f"{contract}")
-            ax.set_title(f"{contract} | {day_sel.strftime('%Y-%m-%d')} 30分単位（{unit}）")
+            # English title
+            ax.set_title(f"Contract {contract} | {day_sel.strftime('%Y-%m-%d')} (30min, {unit})")
             ax.set_xlabel("Time")
             ax.set_ylabel(y_label)
             if legend_on:
@@ -102,17 +103,17 @@ with tab2:
         min_d, max_d = date(2023,1,1), date(2023,12,31)
 
     with col1:
-        start_d = st.date_input("開始日", value=min_d, min_value=min_d, max_value=max_d)
+        start_d = st.date_input("Start date", value=min_d, min_value=min_d, max_value=max_d)
     with col2:
-        end_d = st.date_input("終了日", value=max_d, min_value=min_d, max_value=max_d)
+        end_d = st.date_input("End date", value=max_d, min_value=min_d, max_value=max_d)
 
     if start_d > end_d:
-        st.error("開始日が終了日より後になっています。")
+        st.error("Start date is after end date.")
     else:
         mask = (df["年月日"].dt.date >= start_d) & (df["年月日"].dt.date <= end_d)
         sub = df.loc[mask]
         if sub.empty:
-            st.warning("指定期間のデータが見つかりません。")
+            st.warning("No data in the selected period.")
         else:
             fig2, ax2 = plt.subplots(figsize=(12,5))
             try:
@@ -122,7 +123,8 @@ with tab2:
             for _, row in sub.sort_values("年月日").iterrows():
                 lab = row["年月日"].date().strftime("%Y-%m-%d")
                 ax2.plot(time_cols, convert_values(row[time_cols]).values.flatten(), label=lab)
-            ax2.set_title(f"{contract} | {start_d.strftime('%Y-%m-%d')}〜{end_d.strftime('%Y-%m-%d')}（各日重ね / {unit}）")
+            # English title
+            ax2.set_title(f"Contract {contract} | {start_d.strftime('%Y-%m-%d')} ~ {end_d.strftime('%Y-%m-%d')} (Overlay / {unit})")
             ax2.set_xlabel("Time")
             ax2.set_ylabel(y_label)
             if legend_on:
